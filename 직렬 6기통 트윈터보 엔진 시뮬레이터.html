@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>직렬 6기통 트윈터보 엔진 시뮬레이터</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&display=swap" rel="stylesheet">
+<style>
+:root{color-scheme:dark;--bg:#0b0d12;--panel:#151922;--line:#2a3140;--txt:#e8ecf4;--mut:#8b94a7;--acc:#ff5a36;--btn:#1d2330;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0b0d12;--panel:#151922;--line:#2a3140;--txt:#e8ecf4;--mut:#8b94a7;--btn:#1d2330}}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]){color-scheme:light;--bg:#eceff4;--panel:#ffffff;--line:#cfd5e0;--txt:#141821;--mut:#566074;--btn:#e4e8f0}}
+:root[data-theme="dark"]{color-scheme:dark}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);font-family:system-ui,-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif;user-select:none;-webkit-user-select:none}
+main{max-width:1000px;margin:0 auto;padding:12px}
+h1{font:700 18px/1.3 Orbitron,system-ui,sans-serif;margin:4px 0 10px;letter-spacing:.04em}
+h1 small{display:block;font:400 12px system-ui,sans-serif;color:var(--mut);letter-spacing:0;margin-top:2px}
+canvas{display:block;width:100%;height:auto;background:#0a0c10;border-radius:14px;border:1px solid var(--line)}
+.dash{display:grid;grid-template-columns:84px 1fr 84px;gap:12px;margin-top:12px;align-items:stretch}
+.pedal{position:relative;min-height:300px;border-radius:14px;border:1px solid var(--line);background:repeating-linear-gradient(0deg,#252b38 0 8px,#1b202b 8px 16px);overflow:hidden;touch-action:none;cursor:pointer}
+.pedal i{position:absolute;left:0;right:0;bottom:0;height:0;background:linear-gradient(0deg,rgba(255,90,54,.85),rgba(255,160,60,.35))}
+#brake i{background:linear-gradient(0deg,rgba(230,40,50,.9),rgba(255,90,90,.35))}
+.pedal span{position:absolute;top:10px;left:0;right:0;text-align:center;font:700 11px Orbitron,sans-serif;color:#dfe5f0;letter-spacing:.08em;pointer-events:none}
+.mid{display:flex;flex-direction:column;gap:10px;min-width:0}
+.gears{display:grid;grid-template-columns:repeat(8,1fr);gap:6px}
+.gears button,#snd{background:var(--btn);color:var(--txt);border:1px solid var(--line);border-radius:10px;padding:12px 0;font:700 15px Orbitron,sans-serif;cursor:pointer}
+.gears button.on{background:var(--acc);border-color:var(--acc);color:#fff}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px;color:var(--mut);font-size:12.5px;line-height:1.6}
+#snd{padding:8px 14px;font:600 13px system-ui,sans-serif}
+@media (max-width:560px){.dash{grid-template-columns:64px 1fr 64px;gap:8px}.pedal{min-height:240px}.gears button{padding:10px 0;font-size:13px}}
+</style>
+</head>
+<body>
+<main>
+<h1>INLINE-6 TWIN TURBO<small>직렬 6기통 트윈터보 엔진 시뮬레이터 · 레드존 6500 / 리미터 8000 rpm</small></h1>
+<canvas id="eng" width="1000" height="440"></canvas>
+<section class="dash">
+  <div class="pedal" id="brake"><span>BRAKE</span><i></i></div>
+  <div class="mid">
+    <canvas id="gauge" width="660" height="340"></canvas>
+    <div class="gears" id="gears"></div>
+  </div>
+  <div class="pedal" id="gas"><span>ACCEL</span><i></i></div>
+</section>
+<div class="row">
+  <button id="snd">🔇 사운드 OFF</button>
+  <span>페달을 누른 채 위아래로 드래그 (아래로 갈수록 깊게) · 키보드: ↑/W 액셀, ↓/S/Space 브레이크, E 기어업, Q 기어다운 · 엔진 애니메이션은 슬로모션</span>
+</div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const E=$('eng'),X=E.getContext('2d'),G=$('gauge'),C=G.getContext('2d');
+const clamp=(x,a,b)=>Math.min(b,Math.max(a,x)),ss=(a,b,x)=>{x=clamp((x-a)/(b-a),0,1);return x*x*(3-2*x)};
+const RAT={'-1':3.4,1:3.83,2:2.19,3:1.54,4:1.18,5:1,6:.8},FD=3.9,WR=.33,M=1500,IE=.3;
+const S={we:900*Math.PI/30,rpm:900,v:0,boost:0,thr:0,brk:0,gear:0,cut:false,tach:900,spd:0,ph:0,ta:0};
+const inp={gas:0,brk:0,kg:0,kb:0};
+
+/* ---------- 입력 ---------- */
+function pedal(el,key){let on=false;
+  const set=e=>{const r=el.getBoundingClientRect();inp[key]=clamp((e.clientY-r.top)/r.height,.15,1)};
+  el.onpointerdown=e=>{on=true;el.setPointerCapture(e.pointerId);set(e)};
+  el.onpointermove=e=>{if(on)set(e)};
+  el.onpointerup=el.onpointercancel=()=>{on=false;inp[key]=0};
+}
+pedal($('gas'),'gas');pedal($('brake'),'brk');
+const ORDER=[-1,0,1,2,3,4,5,6],gb={};
+ORDER.forEach(g=>{const b=document.createElement('button');b.textContent=g<0?'R':g===0?'N':g;b.onclick=()=>setGear(g);$('gears').appendChild(b);gb[g]=b});
+function setGear(g){if(g<0&&Math.abs(S.v)*3.6>5)return;S.gear=g;ORDER.forEach(k=>gb[k].classList.toggle('on',k===g))}
+setGear(0);
+addEventListener('keydown',e=>{if(e.repeat)return;const k=e.code;
+  if(k==='ArrowUp'||k==='KeyW')inp.kg=1;
+  else if(k==='ArrowDown'||k==='KeyS'||k==='Space')inp.kb=1;
+  else if(k==='KeyE')setGear(ORDER[Math.min(7,ORDER.indexOf(S.gear)+1)]);
+  else if(k==='KeyQ')setGear(ORDER[Math.max(0,ORDER.indexOf(S.gear)-1)]);
+  else return;e.preventDefault()});
+addEventListener('keyup',e=>{const k=e.code;
+  if(k==='ArrowUp'||k==='KeyW')inp.kg=0;
+  if(k==='ArrowDown'||k==='KeyS'||k==='Space')inp.kb=0});
+
+/* ---------- 물리 ---------- */
+function step(dt){
+  const rpm=S.we*30/Math.PI,thr=S.thr;
+  const bt=thr*ss(1800,4000,rpm);                       // 터보 부스트 (래그 포함)
+  S.boost+=(bt-S.boost)*(1-Math.exp(-dt/(bt>S.boost?.9:.3)));
+  const sh=Math.max(.35,1-((rpm-4600)/5200)**2);         // 토크 곡선
+  let Te=thr*340*(1+1.5*S.boost)*sh-(15+.012*rpm)*(1-.6*thr); // 엔진브레이크 포함
+  if(rpm<900)Te+=(900-rpm)*.2;                           // 아이들 제어
+  if(rpm>7000)S.cut=true;else if(rpm<6850)S.cut=false;   // 연료 차단 리미터
+  if(S.cut)Te=-120;
+  let Tc=0,F=0;const g=S.gear,v=S.v;
+  if(g!==0){                                             // 자동 클러치 + 구동계
+    const d=g<0?-1:1,ra=RAT[g]*FD,wE=d*v/WR*ra,rE=wE*30/Math.PI;
+    const eng=Math.max(ss(950,1500,rpm),ss(1000,1400,rE));
+    const Tm=1400*eng;Tc=clamp(30*(S.we-wE),-Tm,Tm);F=d*Tc*ra*.92/WR;
+    const Fm=1.1*M*9.81;if(Math.abs(F)>Fm){Tc*=Fm/Math.abs(F);F=Fm*Math.sign(F)} // 타이어 그립 한계(휠스핀)
+  }
+  S.we=Math.max(50,S.we+(Te-Tc)/IE*dt);
+  const Fb=15000*S.brk,net=F-.5*v*Math.abs(v)-(Math.abs(v)>.02?220*Math.sign(v):0);
+  if(Math.abs(v)<.05){ if(Math.abs(net)<=Fb+220)S.v=0;else S.v+=(net-Math.sign(net)*Fb)/M*dt; }
+  else{const s=Math.sign(v),nv=v+(net-s*Fb)/M*dt;S.v=(Math.sign(nv)!==s&&Fb>Math.abs(net))?0:nv}
+  S.rpm=S.we*30/Math.PI;
+}
+
+/* ---------- 엔진 그리기 ---------- */
+const OFF=[0,480,240,600,120,360]; // 점화순서 1-5-3-6-2-4
+function turbo(cx,cy,spin,b){
+  X.save();X.translate(cx,cy);
+  X.fillStyle='#2c2724';X.strokeStyle='#5b4f48';X.lineWidth=3;X.beginPath();X.arc(0,0,48,0,7);X.fill();X.stroke();
+  X.strokeStyle=`rgba(90,170,255,${.15+.7*b})`;X.lineWidth=4;X.beginPath();X.arc(0,0,40,0,7);X.stroke();
+  X.rotate(spin);X.fillStyle='#aeb7c6';
+  for(let i=0;i<9;i++){X.rotate(Math.PI*2/9);X.beginPath();X.moveTo(0,0);X.quadraticCurveTo(14,-4,34,6);X.quadraticCurveTo(14,6,0,0);X.fill()}
+  X.restore();
+}
+function snail(R,r0,fill,stroke,glow,flip,ts){ // 골뱅이(볼류트) 하우징
+  X.beginPath();
+  for(let k=0;k<=60;k++){const a=k/60*Math.PI*2,rr=R*(r0+(1-r0)*a/(Math.PI*2)),t=ts+a*flip,x=Math.cos(t)*rr,y=Math.sin(t)*rr;k?X.lineTo(x,y):X.moveTo(x,y)}
+  X.closePath();X.fillStyle=fill;X.fill();if(glow){X.fillStyle=glow;X.fill()}
+  X.lineWidth=3;X.lineJoin='round';X.strokeStyle=stroke;X.stroke();
+}
+function blades(n,len,col){X.strokeStyle=col;X.lineWidth=3;X.lineCap='round';for(let k=0;k<n;k++){X.rotate(Math.PI*2/n);X.beginPath();X.moveTo(0,0);X.quadraticCurveTo(len*.5,-len*.25,len,len*.2);X.stroke()}}
+function drawExhaust(thr,x0,sp){
+  const hot=`rgba(255,${120-thr*60|0},40,${.3+.6*thr})`,B=`rgba(90,170,255,${.2+.6*S.boost})`;
+  for(let side=0;side<2;side++){
+    const g0=side*3,tx=side?850:150,ty=116,R=38,far=x0+(side?g0:g0+2)*sp+16;
+    X.lineCap='round';X.lineJoin='round';
+    // 배기 매니폴드: 콜렉터 + 러너 3개
+    X.strokeStyle='#4d3b34';X.lineWidth=16;X.beginPath();X.moveTo(tx,ty-R);X.lineTo(far,ty-R);X.stroke();
+    X.strokeStyle=hot;X.lineWidth=6;X.stroke();
+    for(let i=0;i<3;i++){const px=x0+(g0+i)*sp+16;
+      X.strokeStyle='#4d3b34';X.lineWidth=10;X.beginPath();X.moveTo(px,98);X.lineTo(px,ty-R);X.stroke();
+      X.strokeStyle=hot;X.lineWidth=4;X.stroke();X.fillStyle='#6a5a52';X.fillRect(px-10,97,20,5)}
+    X.save();X.translate(tx,ty);if(side)X.scale(-1,1);
+    // 터보 축 + 베어링 하우징
+    X.strokeStyle='#8f98ab';X.lineWidth=7;X.beginPath();X.moveTo(-88,0);X.lineTo(0,0);X.stroke();
+    X.fillStyle='#3b3631';X.fillRect(-62,-13,30,26);
+    // 컴프레서 (냉각측) + 차지파이프
+    X.save();X.translate(-88,0);
+    X.lineWidth=14;X.strokeStyle='#2a3445';X.beginPath();X.moveTo(-30,0);X.lineTo(-30,100);X.lineTo(138,100);X.stroke();
+    X.lineWidth=7;X.strokeStyle=B;X.stroke();
+    snail(30,.55,'#27303f','#7088ab',null,-1,Math.PI);
+    X.fillStyle='#121821';X.beginPath();X.arc(0,0,16,0,7);X.fill();
+    X.save();X.rotate(S.ta);blades(7,14,'#aab8d0');X.restore();X.restore();
+    // 터빈 (고온측) 골뱅이 하우징
+    snail(R,.55,'#4b3d36','#85705f',`rgba(255,90,30,${.08+.35*thr})`,1,-Math.PI/2);
+    X.fillStyle='#6a5a52';X.fillRect(8,-R-9,7,18);
+    X.fillStyle='#171211';X.beginPath();X.arc(0,0,21,0,7);X.fill();
+    X.save();X.rotate(S.ta);blades(10,19,`rgba(255,${150+S.boost*60|0},80,.85)`);X.restore();
+    X.restore();X.lineCap='butt';
+  }
+  X.fillStyle='#8b94a7';X.font='600 11px Orbitron,system-ui';X.textAlign='center';X.fillText('EXHAUST MANIFOLD → TURBINE',500,62);
+}
+function drawEngine(){
+  const W=1000,cy=335,r=30,l=100,sp=96,x0=500-2.5*sp,thr=S.thr;
+  X.fillStyle='#0a0c10';X.fillRect(0,0,W,440);
+  // 크랭크 축 / 풀리 / 플라이휠
+  X.strokeStyle='#4a5266';X.lineWidth=8;X.beginPath();X.moveTo(130,cy);X.lineTo(870,cy);X.stroke();
+  const ang=S.ph*Math.PI/180;
+  [[130,cy,30],[870,cy,48]].forEach(([x,y,R])=>{X.save();X.translate(x,y);X.rotate(ang);
+    X.fillStyle='#262c3b';X.strokeStyle='#6a7490';X.lineWidth=3;X.beginPath();X.arc(0,0,R,0,7);X.fill();X.stroke();
+    X.strokeStyle='#8a94ad';X.lineWidth=2;for(let i=0;i<6;i++){X.rotate(Math.PI/3);X.beginPath();X.moveTo(6,0);X.lineTo(R-4,0);X.stroke()}X.restore()});
+  // 블록 / 크랭크케이스 / 헤드
+  X.fillStyle='#232839';X.fillRect(x0-60,140,5*sp+120,155);
+  X.fillStyle='#12151f';X.beginPath();X.roundRect(x0-60,290,5*sp+120,110,[0,0,40,40]);X.fill();
+  X.strokeStyle='#3a4256';X.lineWidth=2;X.stroke();
+  X.fillStyle='#303853';X.fillRect(x0-60,100,5*sp+120,50);
+  drawExhaust(thr,x0,sp);
+  // 실린더
+  for(let i=0;i<6;i++){
+    const cx=x0+i*sp,th=((S.ph-OFF[i])%720+720)%720,al=(th%360)*Math.PI/180;
+    const pinY=cy-(r*Math.cos(al)+Math.sqrt(l*l-(r*Math.sin(al))**2)),top=pinY-24;
+    X.fillStyle='#0d1018';X.fillRect(cx-37,150,74,140);
+    // 행정별 연소실 색
+    let col=null;
+    if(th<180){const k=Math.pow(1-th/180,1.3)*(.35+.65*thr+.1);col=`rgba(255,${150+60*(1-k)|0},40,${k.toFixed(2)})`}
+    else if(th<360)col='rgba(140,140,150,.18)';
+    else if(th<540)col=`rgba(110,170,255,${(.12+.25*thr).toFixed(2)})`;
+    else col='rgba(255,210,90,.16)';
+    if(col){X.fillStyle=col;X.fillRect(cx-37,150,74,top-150)}
+    if(th<22){X.fillStyle='#fff6c8';X.beginPath();X.arc(cx,152,6,0,7);X.fill()}
+    // 밸브
+    const li=th>=360&&th<540?Math.sin((th-360)/180*Math.PI)*11:0,le=th>=180&&th<360?Math.sin((th-180)/180*Math.PI)*11:0;
+    X.strokeStyle='#9fb0c8';X.lineWidth=3;[[cx-16,li],[cx+16,le]].forEach(([vx,lf])=>{X.beginPath();X.moveTo(vx,112);X.lineTo(vx,150+lf);X.stroke();X.fillStyle='#c4cee0';X.fillRect(vx-9,148+lf,18,3)});
+    // 커넥팅 로드 / 크랭크
+    const px=cx+r*Math.sin(al),py=cy-r*Math.cos(al);
+    X.strokeStyle='#97a1b6';X.lineWidth=9;X.beginPath();X.moveTo(cx,pinY);X.lineTo(px,py);X.stroke();
+    X.strokeStyle='#c7cedb';X.lineWidth=14;X.beginPath();X.moveTo(cx,cy);X.lineTo(px,py);X.stroke();
+    X.fillStyle='#5d667a';X.beginPath();X.arc(cx-r*.9*Math.sin(al),cy+r*.9*Math.cos(al),19,0,7);X.fill();
+    X.fillStyle='#e1e6f0';X.beginPath();X.arc(px,py,8,0,7);X.fill();
+    X.fillStyle='#8e98ad';X.beginPath();X.arc(cx,cy,10,0,7);X.fill();
+    // 피스톤
+    const gr=X.createLinearGradient(cx-34,0,cx+34,0);gr.addColorStop(0,'#7b8497');gr.addColorStop(.5,'#cfd6e3');gr.addColorStop(1,'#7b8497');
+    X.fillStyle=gr;X.fillRect(cx-34,top,68,44);X.fillStyle='#454d60';[6,12,18].forEach(o=>X.fillRect(cx-34,top+o,68,2));
+    X.fillStyle='#303853';X.beginPath();X.arc(cx,pinY,5,0,7);X.fill();
+    X.fillStyle='#8b94a7';X.font='600 12px system-ui';X.textAlign='center';X.fillText(i+1,cx,125);
+  }
+  X.fillStyle='#8b94a7';X.font='600 12px Orbitron,system-ui';X.textAlign='left';
+  X.fillText('TWIN TURBO · BOOST '+(S.boost*2).toFixed(2)+' bar',20,28);
+  X.textAlign='right';X.fillText('FIRING 1-5-3-6-2-4',980,28);
+}
+
+/* ---------- 계기판 ---------- */
+function dial(cx,cy,R,mn,mx,maj,mnr,lab,red,val){
+  const A=v=>(135+270*(v-mn)/(mx-mn))*Math.PI/180;
+  const g=C.createRadialGradient(cx,cy,R*.2,cx,cy,R);g.addColorStop(0,'#181c27');g.addColorStop(1,'#06080b');
+  C.fillStyle=g;C.beginPath();C.arc(cx,cy,R+8,0,7);C.fill();C.strokeStyle='#3a4256';C.lineWidth=3;C.stroke();
+  if(red!=null){C.strokeStyle='#e5252a';C.lineWidth=9;C.beginPath();C.arc(cx,cy,R-6,A(red),A(mx));C.stroke()}
+  C.textAlign='center';C.textBaseline='middle';
+  for(let v=mn;v<=mx+1e-6;v+=mnr){
+    const m=Math.abs(v/maj-Math.round(v/maj))<1e-6,a=A(v),c=Math.cos(a),s=Math.sin(a),r2=R-16,r1=r2-(m?16:8);
+    C.strokeStyle=red!=null&&v>=red-1e-6?'#ff4b4b':'#e0e6f2';C.lineWidth=m?3:1.5;
+    C.beginPath();C.moveTo(cx+c*r1,cy+s*r1);C.lineTo(cx+c*r2,cy+s*r2);C.stroke();
+    if(m){const t=lab(v);if(t!==''){C.fillStyle=red!=null&&v>=red-1e-6?'#ff5a5a':'#e8ecf4';C.font=`700 ${R>125?22:15}px Orbitron,sans-serif`;C.fillText(t,cx+c*(R-46),cy+s*(R-46))}}
+  }
+  C.save();C.translate(cx,cy);C.rotate(A(clamp(val,mn,mx+(mx-mn)*.03)));
+  C.shadowColor='rgba(255,60,40,.8)';C.shadowBlur=10;C.fillStyle='#ff3b30';
+  C.beginPath();C.moveTo(R-20,0);C.lineTo(0,-3.5);C.lineTo(-18,0);C.lineTo(0,3.5);C.fill();C.restore();
+  C.fillStyle='#20242e';C.strokeStyle='#8791a8';C.lineWidth=2;C.beginPath();C.arc(cx,cy,12,0,7);C.fill();C.stroke();
+}
+function drawGauge(t){
+  C.clearRect(0,0,660,340);C.fillStyle='#0a0c10';C.fillRect(0,0,660,340);
+  const r=S.tach;
+  for(let i=0;i<12;i++){ // 시프트 라이트
+    const th=4500+i*(2000/11),x=330+(i-5.5)*22;let on=r>=th;
+    const lim=r>6900&&Math.floor(t/90)%2===0;
+    C.fillStyle=lim?'#ff3030':on?(i<4?'#27d36b':i<8?'#ffd02b':'#ff3b30'):'#1d2330';
+    C.beginPath();C.arc(x,14,6,0,7);C.fill();
+  }
+  dial(135,172,112,0,320,20,10,v=>v%40===0?v:'',null,S.spd*3.6);
+  dial(495,186,140,0,8,1,.5,v=>v,6.5,r/1000);
+  C.fillStyle='#e8ecf4';C.textAlign='center';C.textBaseline='middle';
+  C.font='700 34px Orbitron,sans-serif';C.fillText(Math.round(Math.abs(S.spd)*3.6),135,215);
+  C.fillStyle='#8b94a7';C.font='600 11px Orbitron,sans-serif';C.fillText('km/h',135,240);C.fillText('x1000 r/min',495,150);
+  C.fillStyle=S.cut?'#ff4b4b':'#ffb02e';C.font='700 54px Orbitron,sans-serif';
+  C.fillText(S.gear<0?'R':S.gear===0?'N':S.gear,495,238);
+  C.fillStyle='#8b94a7';C.font='600 12px Orbitron,sans-serif';C.fillText(Math.round(S.rpm)+' rpm',495,278);
+  // 부스트 바
+  C.textAlign='left';C.fillStyle='#8b94a7';C.font='600 12px Orbitron,sans-serif';C.fillText('BOOST '+(S.boost*2).toFixed(2)+' bar',22,312);
+  C.fillStyle='#1d2330';C.fillRect(170,304,110,12);C.fillStyle='#4aa8ff';C.fillRect(170,304,110*S.boost,12);
+}
+
+/* ---------- 사운드 ---------- */
+let AU=null;
+$('snd').onclick=()=>{
+  if(AU){AU.c.close();AU=null;$('snd').textContent='🔇 사운드 OFF';return}
+  const c=new(window.AudioContext||window.webkitAudioContext)(),m=c.createGain(),f=c.createBiquadFilter();
+  f.type='lowpass';f.connect(m);m.connect(c.destination);m.gain.value=0;
+  const mk=(type,mul,gn)=>{const o=c.createOscillator(),g=c.createGain();o.type=type;g.gain.value=gn;o.connect(g);g.connect(f);o.start();return{o,mul}};
+  AU={c,m,f,os:[mk('sawtooth',1,.5),mk('sawtooth',2,.25),mk('triangle',.5,.8),mk('square',1.5,.12)]};
+  const w=c.createOscillator(),wg=c.createGain();w.type='sine';wg.gain.value=0;w.connect(wg);wg.connect(c.destination);w.start();AU.w=w;AU.wg=wg;
+  $('snd').textContent='🔊 사운드 ON';
+};
+function audio(){if(!AU)return;const c=AU.c,f=S.rpm/60*3,t=c.currentTime;
+  AU.os.forEach(o=>o.o.frequency.setTargetAtTime(f*o.mul,t,.03));
+  AU.f.frequency.setTargetAtTime(300+S.rpm*.25+S.thr*1500,t,.05);
+  AU.m.gain.setTargetAtTime(S.cut?.02:.05+.11*S.thr,t,.04);
+  AU.w.frequency.setTargetAtTime(1500+S.boost*3500+S.rpm*.1,t,.05);
+  AU.wg.gain.setTargetAtTime(S.boost*.012,t,.08)}
+
+/* ---------- 메인 루프 ---------- */
+let last=performance.now();
+function frame(t){
+  const dt=Math.min(.033,(t-last)/1e3);last=t;
+  const gt=Math.max(inp.gas,inp.kg),bt=Math.max(inp.brk,inp.kb);
+  S.thr+=(gt-S.thr)*(1-Math.exp(-dt*(gt>S.thr?14:20)));
+  S.brk+=(bt-S.brk)*(1-Math.exp(-dt*16));
+  const n=Math.max(1,Math.ceil(dt/.004));for(let i=0;i<n;i++)step(dt/n);
+  S.tach+=(S.rpm-S.tach)*(1-Math.exp(-dt*18));S.spd+=(S.v-S.spd)*(1-Math.exp(-dt*12));
+  S.ph=(S.ph+(120+S.rpm*.05)*6*dt)%720;S.ta+=(.2+S.boost*40)*dt*3;
+  $('gas').firstElementChild.nextElementSibling.style.height=S.thr*100+'%';
+  $('brake').firstElementChild.nextElementSibling.style.height=S.brk*100+'%';
+  drawEngine();drawGauge(t);audio();requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
